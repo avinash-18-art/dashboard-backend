@@ -10,23 +10,25 @@ const PDFDocument = require("pdfkit");
 
 const app = express();
 const PORT = 5000;
-const MONGO_URI = "mongodb+srv://pipaliyanamasvi:dashboard@dashboard.qk6clff.mongodb.net/?retryWrites=true&w=majority&appName=dashboard";
+const MONGO_URI = "mongodb://127.0.0.1:27017";
 const DB_NAME = "dashboard_db";
 let db;
 
+// ===== MongoDB connection =====
 MongoClient.connect(MONGO_URI, { useUnifiedTopology: true })
   .then((client) => {
     db = client.db(DB_NAME);
-    console.log(" Connected to MongoDB");
+    console.log("✅ Connected to MongoDB");
   })
   .catch((err) => {
-    console.error(" MongoDB connection failed:", err);
+    console.error("❌ MongoDB connection failed:", err);
   });
 
 app.use(cors());
 app.use(express.json());
 const upload = multer({ dest: "uploads/" });
 
+// ===== Status list =====
 const statusList = [
   "all",
   "rto",
@@ -39,6 +41,7 @@ const statusList = [
   "supplier_discounted_price",
 ];
 
+// ===== Helpers =====
 function parsePrice(value) {
   if (!value) return 0;
   const clean = value.toString().trim().replace(/[^0-9.\-]/g, "");
@@ -139,6 +142,7 @@ function categorizeRows(rows) {
   return categories;
 }
 
+// ===== File upload =====
 app.post("/upload", upload.single("file"), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: "No file uploaded" });
@@ -166,11 +170,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Unsupported file format" });
     }
   } catch (error) {
-    console.error(" Error processing file:", error);
+    console.error("❌ Error processing file:", error);
     return res.status(500).json({ error: "Failed to process file" });
   }
 });
 
+// ===== Save to DB =====
 async function saveToDB(rows, res) {
   if (!db) return res.status(500).json({ message: "MongoDB not connected yet" });
   if (!rows || !rows.length)
@@ -178,6 +183,7 @@ async function saveToDB(rows, res) {
 
   const categorized = categorizeRows(rows);
 
+  // build profit by date
   const profitByDate = {};
   rows.forEach((row) => {
     const status = (row["Reason for Credit Entry"] || "").toLowerCase().trim();
@@ -225,13 +231,15 @@ async function saveToDB(rows, res) {
       categories: categorized,
       profitByDate: profitGraphArray,
     });
-    console.log(" Uploaded data inserted into MongoDB with profit graph");
+    console.log("✅ Uploaded data inserted into MongoDB with profit graph");
     return res.json({ ...categorized, profitByDate: profitGraphArray });
   } catch (error) {
-    console.error(" Error saving uploaded data to MongoDB:", error);
+    console.error("❌ Error saving uploaded data to MongoDB:", error);
     return res.status(500).json({ message: "Failed to save data to MongoDB" });
   }
 }
+
+// ===== Profit Graph API =====
 app.get("/profit-graph", async (req, res) => {
   try {
     const result = await db
@@ -246,11 +254,12 @@ app.get("/profit-graph", async (req, res) => {
     const graphData = result[0].profitByDate || [];
     res.json(graphData);
   } catch (err) {
-    console.error(" Profit graph error:", err);
+    console.error("❌ Profit graph error:", err);
     res.status(500).json({ error: "Failed to generate profit graph data" });
   }
 });
 
+// ===== Filter API =====
 app.get("/filter/:subOrderNo", async (req, res) => {
   const subOrderNo = req.params.subOrderNo.trim().toLowerCase();
   if (!subOrderNo) return res.status(400).json({ error: "Sub Order No required" });
@@ -311,11 +320,12 @@ app.get("/filter/:subOrderNo", async (req, res) => {
       profit: 500 - discountedPrice,
     });
   } catch (err) {
-    console.error(" Filter error:", err);
+    console.error("❌ Filter error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
+/* ===== PDF Helpers ===== */
 function formatINR(n) {
   const num = Number(n) || 0;
   return "₹" + num.toLocaleString("en-IN");
@@ -346,10 +356,11 @@ function drawTable(doc, { headers, rows }, options = {}) {
   function maybeAddPage(nextRowHeight) {
     if (y + nextRowHeight > maxY) {
       doc.addPage();
-      y = 60; 
+      y = 60; // top margin on new page
     }
   }
 
+  // Header
   doc.font(headerFont).fontSize(fontSize);
   maybeAddPage(headerHeight);
   let x = startX;
@@ -363,6 +374,7 @@ function drawTable(doc, { headers, rows }, options = {}) {
   }
   y += headerHeight;
 
+  // Rows
   doc.font(rowFont).fontSize(fontSize);
   rows.forEach((row) => {
     maybeAddPage(rowHeight);
@@ -378,8 +390,10 @@ function drawTable(doc, { headers, rows }, options = {}) {
     y += rowHeight;
   });
 
-  return y; 
+  return y; // last Y position
 }
+
+// ===== PDF Download API WITH Profit-By-Date Table =====
 app.get("/download-pdf", async (req, res) => {
   try {
     const result = await db
@@ -397,6 +411,8 @@ app.get("/download-pdf", async (req, res) => {
     const profitByDate = Array.isArray(latest.profitByDate)
       ? [...latest.profitByDate]
       : [];
+
+    // sort dates ascending for table
     profitByDate.sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0));
 
     res.setHeader("Content-Type", "application/pdf");
@@ -506,6 +522,7 @@ app.get("/download-pdf", async (req, res) => {
     const headers = ["Date", "Profit"];
     const rows = profitByDate.map((p) => [p.date, formatINR(p.profit || 0)]);
 
+    // If empty, still show an empty table
     const tableData = {
       headers,
       rows: rows.length ? rows : [["—", "—"]],
